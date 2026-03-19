@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 import requests
 
-from app import tls_impersonate_proxy
+from tls_impersonate_proxy import tls_impersonate_proxy
 
 
 # --- Helpers ---

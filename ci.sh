@@ -2,11 +2,11 @@
 set -e
 
 echo "Running basedpyright type checks..."
-basedpyright app/
+basedpyright tls_impersonate_proxy/
 
 echo ""
 echo "Running ruff linting..."
-ruff check app/
+ruff check tls_impersonate_proxy/
 
 echo ""
 echo "Running tests..."
