@@ -12,13 +12,13 @@ Many CDNs use TLS fingerprinting (JA3/JA4) to distinguish real browsers from too
 ## Install
 
 ```bash
-pip install tls-impersonate-proxy
+pip install git+https://github.com/hauxir/tls-impersonate-proxy.git
 ```
 
 Or with [uv](https://github.com/astral-sh/uv):
 
 ```bash
-uv pip install tls-impersonate-proxy
+uv pip install git+https://github.com/hauxir/tls-impersonate-proxy.git
 ```
 
 ## Usage
@@ -53,13 +53,6 @@ Set the `http_proxy` / `https_proxy` environment variables:
 ```bash
 export http_proxy=http://127.0.0.1:8899
 export https_proxy=http://127.0.0.1:8899
-```
-
-### Docker
-
-```bash
-docker build -t tls-impersonate-proxy .
-docker run -p 8899:8899 tls-impersonate-proxy
 ```
 
 ## Environment variables
