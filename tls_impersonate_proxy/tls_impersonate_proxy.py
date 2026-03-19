@@ -192,13 +192,13 @@ def _get_session():
     return _SESSION_LOCAL.session
 
 
-def _do_request(method, url, headers, body, stream=False):
+def _do_request(method, url, headers, body):
     """Issue a request via curl_cffi with TLS impersonation."""
     try:
         return _get_session().request(
             method=method, url=url, headers=headers,
             data=body, timeout=30,
-            allow_redirects=False, stream=stream,
+            allow_redirects=False,
         )
     except Exception as e:
         print(f"tls-impersonate-proxy error: {e}", flush=True)
@@ -306,13 +306,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         "proxy-authorization", "proxy-authenticate"}
                 fwd_headers = {k: v for k, v in headers.items() if k.lower() not in skip}
 
-                r = _do_request(method, url, fwd_headers, body, stream=True)
+                r = _do_request(method, url, fwd_headers, body)
                 if r is None:
                     wfile.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
                     wfile.flush()
                     break
 
-                # Write response with streaming
+                # Write response
                 reason = http.client.responses.get(r.status_code, "Unknown")
                 status_line = f"HTTP/1.1 {r.status_code} {reason}\r\n".encode()
                 wfile.write(status_line)
@@ -320,16 +320,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 for k, v in r.headers.items():
                     if k.lower() not in skip_h:
                         wfile.write(f"{k}: {v}\r\n".encode())
-                wfile.write(b"Transfer-Encoding: chunked\r\n")
+                content = r.content
+                wfile.write(f"Content-Length: {len(content)}\r\n".encode())
                 wfile.write(b"Connection: keep-alive\r\n")
                 wfile.write(b"\r\n")
-                for chunk in r.iter_content(CHUNK_SIZE):
-                    wfile.write(f"{len(chunk):x}\r\n".encode())
-                    wfile.write(chunk)
-                    wfile.write(b"\r\n")
-                wfile.write(b"0\r\n\r\n")
+                wfile.write(content)
                 wfile.flush()
-                r.close()
                 print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
 
         except Exception as e:
@@ -368,7 +364,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if content_length:
             body = self.rfile.read(int(content_length))
 
-        resp = _do_request(self.command, url, headers, body, stream=True)
+        resp = _do_request(self.command, url, headers, body)
         if resp is None:
             self.send_error(502, "Upstream request failed")
             return
@@ -376,22 +372,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(resp.status_code)
             is_head = self.command == "HEAD"
-            skip_resp = {"transfer-encoding", "content-encoding"}
-            if not is_head:
-                skip_resp.add("content-length")
+            skip_resp = {"transfer-encoding", "content-encoding", "content-length"}
             for key, val in resp.headers.items():
                 if key.lower() not in skip_resp:
                     self.send_header(key, val or "")
             if is_head:
+                cl = resp.headers.get("content-length")
+                if cl:
+                    self.send_header("Content-Length", cl)
                 self.end_headers()
             else:
-                self.send_header("Transfer-Encoding", "chunked")
+                content = resp.content
+                self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
-                for chunk in resp.iter_content(CHUNK_SIZE):
-                    self.wfile.write(f"{len(chunk):x}\r\n".encode())
-                    self.wfile.write(chunk)
-                    self.wfile.write(b"\r\n")
-                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.write(content)
             self.wfile.flush()
         finally:
             resp.close()
