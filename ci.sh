@@ -10,7 +10,7 @@ ruff check app/
 
 echo ""
 echo "Running tests..."
-python -m pytest tests/ -v
+python -m pytest tests/ -v -m "not live"
 
 echo ""
 echo "All checks passed!"

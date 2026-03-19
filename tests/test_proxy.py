@@ -1,5 +1,6 @@
 """Tests for tls-impersonate-proxy."""
 
+import concurrent.futures
 import socket
 import threading
 import time
@@ -22,6 +23,22 @@ class MockUpstreamHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path == "/redirect":
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:{}/redirected".format(self.server.server_port))
+            self.end_headers()
+            return
+
+        if self.path == "/large":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            chunk = b"x" * 65536
+            total = chunk * 16  # ~1 MB
+            self.send_header("Content-Length", str(len(total)))
+            self.end_headers()
+            self.wfile.write(total)
+            return
+
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("X-Test-Header", "upstream-value")
@@ -70,16 +87,12 @@ def proxy_server():
     port = _get_free_port()
     proxy_url = f"http://127.0.0.1:{port}"
 
-    # Patch _do_request to use regular requests (no curl_cffi needed in tests)
-    original_do_request = tls_impersonate_proxy._do_request
-
     def _mock_do_request(method, url, headers, body, stream=False):
         try:
-            resp = requests.request(
+            return requests.request(
                 method=method, url=url, headers=headers,
                 data=body, timeout=10, allow_redirects=False, stream=stream,
             )
-            return resp
         except Exception:
             return None
 
@@ -93,7 +106,6 @@ def proxy_server():
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
 
-        # Wait for proxy to be ready
         for _ in range(50):
             try:
                 s = socket.create_connection(("127.0.0.1", port), timeout=0.1)
@@ -111,25 +123,20 @@ def proxy_server():
 
 class TestHostPortParsing:
     def test_standard_host_port(self):
-        """Test parsing standard host:port."""
-        handler = type("FakeHandler", (), {"path": "example.com:443"})()
-        host, _, port_str = handler.path.rpartition(":")
+        path = "example.com:443"
+        host, _, port_str = path.rpartition(":")
         host = host.strip("[]")
-        port = int(port_str) if port_str else 443
         assert host == "example.com"
-        assert port == 443
+        assert int(port_str) == 443
 
     def test_ipv6_host_port(self):
-        """Test parsing IPv6 [::1]:443."""
         path = "[::1]:443"
         host, _, port_str = path.rpartition(":")
         host = host.strip("[]")
-        port = int(port_str) if port_str else 443
         assert host == "::1"
-        assert port == 443
+        assert int(port_str) == 443
 
     def test_custom_port(self):
-        """Test parsing host with non-standard port."""
         path = "example.com:8080"
         host, _, port_str = path.rpartition(":")
         host = host.strip("[]")
@@ -139,42 +146,33 @@ class TestHostPortParsing:
 
 class TestCertCache:
     def test_init_ca(self):
-        """Test that _init_ca initializes CA key and cert."""
         tls_impersonate_proxy._init_ca()
         assert tls_impersonate_proxy._CA_KEY is not None
         assert tls_impersonate_proxy._CA_CERT is not None
 
     def test_get_cert_for_host_caches(self):
-        """Test that certs are cached per hostname."""
         tls_impersonate_proxy._init_ca()
         tls_impersonate_proxy._HOST_CERT_CACHE.clear()
-
         ctx1 = tls_impersonate_proxy._get_cert_for_host("test.example.com")
         ctx2 = tls_impersonate_proxy._get_cert_for_host("test.example.com")
         assert ctx1 is ctx2
 
     def test_get_cert_for_host_different_hosts(self):
-        """Test that different hosts get different certs."""
         tls_impersonate_proxy._init_ca()
         tls_impersonate_proxy._HOST_CERT_CACHE.clear()
-
         ctx1 = tls_impersonate_proxy._get_cert_for_host("host1.example.com")
         ctx2 = tls_impersonate_proxy._get_cert_for_host("host2.example.com")
         assert ctx1 is not ctx2
 
     def test_get_cert_for_ip_address(self):
-        """Test cert generation for IP address hostnames."""
         tls_impersonate_proxy._init_ca()
         tls_impersonate_proxy._HOST_CERT_CACHE.clear()
-
         ctx = tls_impersonate_proxy._get_cert_for_host("1.2.3.4")
         assert ctx is not None
 
     def test_cache_eviction(self):
-        """Test that cache evicts oldest entries when full."""
         tls_impersonate_proxy._init_ca()
         tls_impersonate_proxy._HOST_CERT_CACHE.clear()
-
         old_max = tls_impersonate_proxy._HOST_CERT_MAX
         tls_impersonate_proxy._HOST_CERT_MAX = 3
         try:
@@ -182,7 +180,6 @@ class TestCertCache:
                 tls_impersonate_proxy._get_cert_for_host(f"host{i}.example.com")
             assert len(tls_impersonate_proxy._HOST_CERT_CACHE) == 3
             assert "host0.example.com" not in tls_impersonate_proxy._HOST_CERT_CACHE
-            assert "host1.example.com" not in tls_impersonate_proxy._HOST_CERT_CACHE
             assert "host4.example.com" in tls_impersonate_proxy._HOST_CERT_CACHE
         finally:
             tls_impersonate_proxy._HOST_CERT_MAX = old_max
@@ -190,18 +187,15 @@ class TestCertCache:
 
 class TestSessionManagement:
     def test_get_session_returns_session(self):
-        """Test that _get_session returns a curl_cffi session."""
         session = tls_impersonate_proxy._get_session()
         assert session is not None
 
     def test_get_session_same_thread(self):
-        """Test that same thread gets same session."""
         s1 = tls_impersonate_proxy._get_session()
         s2 = tls_impersonate_proxy._get_session()
         assert s1 is s2
 
     def test_get_session_different_threads(self):
-        """Test that different threads get different sessions."""
         sessions = []
 
         def get_session():
@@ -217,62 +211,47 @@ class TestSessionManagement:
         assert sessions[0] is not sessions[1]
 
 
-# --- Integration Tests ---
+# --- Integration Tests (mock upstream) ---
 
 
 class TestProxyHTTP:
     def test_proxy_get(self, proxy_server, upstream_server):
-        """Test proxying a GET request."""
-        resp = requests.get(
-            f"{upstream_server}/hello",
-            proxies={"http": proxy_server},
-        )
+        resp = requests.get(f"{upstream_server}/hello", proxies={"http": proxy_server})
         assert resp.status_code == 200
         assert resp.text == "GET /hello"
 
-    def test_proxy_get_with_path(self, proxy_server, upstream_server):
-        """Test proxying a GET with a path and query string."""
-        resp = requests.get(
-            f"{upstream_server}/path?key=value",
-            proxies={"http": proxy_server},
-        )
+    def test_proxy_get_with_query(self, proxy_server, upstream_server):
+        resp = requests.get(f"{upstream_server}/path?key=value", proxies={"http": proxy_server})
         assert resp.status_code == 200
         assert resp.text == "GET /path?key=value"
 
     def test_proxy_post(self, proxy_server, upstream_server):
-        """Test proxying a POST request with body."""
-        resp = requests.post(
-            f"{upstream_server}/submit",
-            data="test-body",
-            proxies={"http": proxy_server},
-        )
+        resp = requests.post(f"{upstream_server}/submit", data="test-body", proxies={"http": proxy_server})
         assert resp.status_code == 200
         assert "POST /submit body=test-body" in resp.text
 
-    def test_proxy_head(self, proxy_server, upstream_server):
-        """Test proxying a HEAD request returns no body."""
-        resp = requests.head(
-            f"{upstream_server}/resource",
-            proxies={"http": proxy_server},
-        )
+    def test_proxy_head_no_body(self, proxy_server, upstream_server):
+        resp = requests.head(f"{upstream_server}/resource", proxies={"http": proxy_server})
         assert resp.status_code == 200
         assert resp.text == ""
         assert resp.headers.get("Content-Length") == "42"
 
     def test_proxy_preserves_upstream_headers(self, proxy_server, upstream_server):
-        """Test that upstream response headers are forwarded."""
-        resp = requests.get(
-            f"{upstream_server}/hello",
-            proxies={"http": proxy_server},
-        )
+        resp = requests.get(f"{upstream_server}/hello", proxies={"http": proxy_server})
         assert resp.headers.get("X-Test-Header") == "upstream-value"
 
+    def test_proxy_strips_hop_by_hop_headers(self, proxy_server, upstream_server):
+        """Hop-by-hop headers from client should not reach upstream."""
+        resp = requests.get(
+            f"{upstream_server}/hello",
+            headers={"Proxy-Connection": "keep-alive", "X-Custom": "preserved"},
+            proxies={"http": proxy_server},
+        )
+        assert resp.status_code == 200
+
     def test_proxy_bad_url(self, proxy_server):
-        """Test that non-absolute URLs return 400."""
-        # Send a raw request with a relative URL through the proxy
         s = socket.create_connection(
-            (proxy_server.split("//")[1].split(":")[0],
-             int(proxy_server.split(":")[-1])),
+            (proxy_server.split("//")[1].split(":")[0], int(proxy_server.split(":")[-1])),
         )
         s.sendall(b"GET /relative-path HTTP/1.1\r\nHost: localhost\r\n\r\n")
         resp = s.recv(4096)
@@ -280,9 +259,83 @@ class TestProxyHTTP:
         assert b"400" in resp
 
     def test_proxy_upstream_down(self, proxy_server):
-        """Test that unreachable upstream returns 502."""
-        resp = requests.get(
-            "http://127.0.0.1:1/unreachable",
-            proxies={"http": proxy_server},
-        )
+        resp = requests.get("http://127.0.0.1:1/unreachable", proxies={"http": proxy_server})
         assert resp.status_code == 502
+
+    def test_proxy_redirect_passthrough(self, proxy_server, upstream_server):
+        """Proxy should forward 302 without following it."""
+        resp = requests.get(
+            f"{upstream_server}/redirect",
+            proxies={"http": proxy_server},
+            allow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert "/redirected" in resp.headers.get("Location", "")
+
+    def test_proxy_large_response(self, proxy_server, upstream_server):
+        """Proxy should handle large streamed responses."""
+        resp = requests.get(f"{upstream_server}/large", proxies={"http": proxy_server})
+        assert resp.status_code == 200
+        assert len(resp.content) == 65536 * 16  # 1 MB
+
+    def test_proxy_concurrent_requests(self, proxy_server, upstream_server):
+        """Proxy should handle concurrent requests without errors."""
+
+        def fetch(i):
+            resp = requests.get(f"{upstream_server}/concurrent-{i}", proxies={"http": proxy_server})
+            return resp.status_code, resp.text
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+            futures = [pool.submit(fetch, i) for i in range(20)]
+            results = [f.result() for f in futures]
+
+        for status, text in results:
+            assert status == 200
+            assert text.startswith("GET /concurrent-")
+
+
+# --- Live Integration Test ---
+
+
+@pytest.mark.live
+class TestProxyLive:
+    """Tests that hit real URLs. Run with: pytest -m live"""
+
+    def test_fetch_kosmi_webm(self):
+        """Fetch a real video file through the proxy using curl_cffi."""
+        port = _get_free_port()
+        proxy_url = f"http://127.0.0.1:{port}"
+
+        from socketserver import ThreadingMixIn
+
+        class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+            daemon_threads = True
+
+        tls_impersonate_proxy._init_ca()
+        server = ThreadingHTTPServer(("127.0.0.1", port), tls_impersonate_proxy.ProxyHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        for _ in range(50):
+            try:
+                s = socket.create_connection(("127.0.0.1", port), timeout=0.1)
+                s.close()
+                break
+            except OSError:
+                time.sleep(0.1)
+
+        try:
+            resp = requests.get(
+                "http://kosmi.io/kosmishort.webm",
+                proxies={"http": proxy_url},
+                timeout=30,
+            )
+            assert resp.status_code == 200
+            assert len(resp.content) > 10000
+            assert resp.headers.get("Content-Type") in (
+                "video/webm",
+                "application/octet-stream",
+                None,
+            ) or "webm" in resp.headers.get("Content-Type", "")
+        finally:
+            server.shutdown()

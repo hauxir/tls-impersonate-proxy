@@ -75,3 +75,8 @@ reportOptionalMemberAccess = "none"
 reportPossiblyUnboundVariable = "none"
 include = ["app"]
 exclude = ["**/node_modules", "**/__pycache__", "venv", ".venv"]
+
+[tool.pytest.ini_options]
+markers = [
+    "live: tests that hit real URLs (deselect with '-m \"not live\"')",
+]
