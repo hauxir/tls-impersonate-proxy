@@ -198,7 +198,7 @@ def _do_request(method, url, headers, body):
         return _get_session().request(
             method=method, url=url, headers=headers,
             data=body, timeout=30,
-            allow_redirects=False,
+            allow_redirects=False, stream=True,
         )
     except Exception as e:
         print(f"tls-impersonate-proxy error: {e}", flush=True)
@@ -312,7 +312,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     wfile.flush()
                     break
 
-                # Write response
+                # Write response — try streaming, fall back to buffered
                 reason = http.client.responses.get(r.status_code, "Unknown")
                 status_line = f"HTTP/1.1 {r.status_code} {reason}\r\n".encode()
                 wfile.write(status_line)
@@ -320,11 +320,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 for k, v in r.headers.items():
                     if k.lower() not in skip_h:
                         wfile.write(f"{k}: {v}\r\n".encode())
-                content = r.content
-                wfile.write(f"Content-Length: {len(content)}\r\n".encode())
                 wfile.write(b"Connection: keep-alive\r\n")
-                wfile.write(b"\r\n")
-                wfile.write(content)
+
+                # Try streaming first; curl_cffi iter_content can be empty
+                chunks = list(r.iter_content())
+                if chunks:
+                    wfile.write(b"Transfer-Encoding: chunked\r\n\r\n")
+                    for chunk in chunks:
+                        wfile.write(f"{len(chunk):x}\r\n".encode())
+                        wfile.write(chunk)
+                        wfile.write(b"\r\n")
+                    wfile.write(b"0\r\n\r\n")
+                else:
+                    content = r.content
+                    wfile.write(f"Content-Length: {len(content)}\r\n".encode())
+                    wfile.write(b"\r\n")
+                    wfile.write(content)
                 wfile.flush()
                 print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
 
@@ -377,15 +388,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if key.lower() not in skip_resp:
                     self.send_header(key, val or "")
             if is_head:
+                # Forward Content-Length for HEAD so clients can probe size
                 cl = resp.headers.get("content-length")
                 if cl:
                     self.send_header("Content-Length", cl)
                 self.end_headers()
             else:
-                content = resp.content
-                self.send_header("Content-Length", str(len(content)))
-                self.end_headers()
-                self.wfile.write(content)
+                # Try streaming first; curl_cffi iter_content can be empty
+                chunks = list(resp.iter_content())
+                if chunks:
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    for chunk in chunks:
+                        self.wfile.write(f"{len(chunk):x}\r\n".encode())
+                        self.wfile.write(chunk)
+                        self.wfile.write(b"\r\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                else:
+                    content = resp.content
+                    self.send_header("Content-Length", str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
             self.wfile.flush()
         finally:
             resp.close()
