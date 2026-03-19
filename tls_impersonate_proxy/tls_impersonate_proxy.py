@@ -321,14 +321,26 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     if k.lower() not in skip_h:
                         wfile.write(f"{k}: {v}\r\n".encode())
 
-                # Collect all data then send with Content-Length
-                # (curl_cffi stream=True means r.content is empty, must use iter_content)
-                body_parts = list(r.iter_content())
-                body_data = b"".join(body_parts)
-                wfile.write(f"Content-Length: {len(body_data)}\r\n".encode())
                 wfile.write(b"Connection: keep-alive\r\n")
-                wfile.write(b"\r\n")
-                wfile.write(body_data)
+                upstream_cl = r.headers.get("content-length")
+                if upstream_cl:
+                    # Known size — buffer and send with Content-Length
+                    # (decompressed size may differ, so recompute)
+                    body_data = b"".join(r.iter_content())
+                    wfile.write(f"Content-Length: {len(body_data)}\r\n".encode())
+                    wfile.write(b"\r\n")
+                    wfile.write(body_data)
+                else:
+                    # Unknown/streaming — use chunked
+                    wfile.write(b"Transfer-Encoding: chunked\r\n")
+                    wfile.write(b"\r\n")
+                    for chunk in r.iter_content():
+                        if chunk:
+                            wfile.write(f"{len(chunk):x}\r\n".encode())
+                            wfile.write(chunk)
+                            wfile.write(b"\r\n")
+                            wfile.flush()
+                    wfile.write(b"0\r\n\r\n")
                 wfile.flush()
                 print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
 
@@ -387,10 +399,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", cl)
                 self.end_headers()
             else:
-                body_data = b"".join(resp.iter_content())
-                self.send_header("Content-Length", str(len(body_data)))
-                self.end_headers()
-                self.wfile.write(body_data)
+                upstream_cl = resp.headers.get("content-length")
+                if upstream_cl:
+                    body_data = b"".join(resp.iter_content())
+                    self.send_header("Content-Length", str(len(body_data)))
+                    self.end_headers()
+                    self.wfile.write(body_data)
+                else:
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    for chunk in resp.iter_content():
+                        if chunk:
+                            self.wfile.write(f"{len(chunk):x}\r\n".encode())
+                            self.wfile.write(chunk)
+                            self.wfile.write(b"\r\n")
+                            self.wfile.flush()
+                    self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
         finally:
             resp.close()
