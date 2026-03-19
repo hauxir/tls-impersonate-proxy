@@ -312,7 +312,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     wfile.flush()
                     break
 
-                # Write response — try streaming, fall back to buffered
+                # Write response
                 reason = http.client.responses.get(r.status_code, "Unknown")
                 status_line = f"HTTP/1.1 {r.status_code} {reason}\r\n".encode()
                 wfile.write(status_line)
@@ -320,22 +320,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 for k, v in r.headers.items():
                     if k.lower() not in skip_h:
                         wfile.write(f"{k}: {v}\r\n".encode())
-                wfile.write(b"Connection: keep-alive\r\n")
 
-                # Try streaming first; curl_cffi iter_content can be empty
-                chunks = list(r.iter_content())
-                if chunks:
-                    wfile.write(b"Transfer-Encoding: chunked\r\n\r\n")
-                    for chunk in chunks:
-                        wfile.write(f"{len(chunk):x}\r\n".encode())
-                        wfile.write(chunk)
-                        wfile.write(b"\r\n")
-                    wfile.write(b"0\r\n\r\n")
-                else:
-                    content = r.content
-                    wfile.write(f"Content-Length: {len(content)}\r\n".encode())
-                    wfile.write(b"\r\n")
-                    wfile.write(content)
+                # Collect all data then send with Content-Length
+                # (curl_cffi stream=True means r.content is empty, must use iter_content)
+                body_parts = list(r.iter_content())
+                body_data = b"".join(body_parts)
+                wfile.write(f"Content-Length: {len(body_data)}\r\n".encode())
+                wfile.write(b"Connection: keep-alive\r\n")
+                wfile.write(b"\r\n")
+                wfile.write(body_data)
                 wfile.flush()
                 print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
 
@@ -394,21 +387,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", cl)
                 self.end_headers()
             else:
-                # Try streaming first; curl_cffi iter_content can be empty
-                chunks = list(resp.iter_content())
-                if chunks:
-                    self.send_header("Transfer-Encoding", "chunked")
-                    self.end_headers()
-                    for chunk in chunks:
-                        self.wfile.write(f"{len(chunk):x}\r\n".encode())
-                        self.wfile.write(chunk)
-                        self.wfile.write(b"\r\n")
-                    self.wfile.write(b"0\r\n\r\n")
-                else:
-                    content = resp.content
-                    self.send_header("Content-Length", str(len(content)))
-                    self.end_headers()
-                    self.wfile.write(content)
+                body_data = b"".join(resp.iter_content())
+                self.send_header("Content-Length", str(len(body_data)))
+                self.end_headers()
+                self.wfile.write(body_data)
             self.wfile.flush()
         finally:
             resp.close()
