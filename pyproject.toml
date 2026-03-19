@@ -24,6 +24,7 @@ dev = [
     "basedpyright>=1.20.0",
     "ruff>=0.8.0",
     "pytest>=7.0.0",
+    "requests>=2.28.0",
 ]
 
 [tool.ruff]
