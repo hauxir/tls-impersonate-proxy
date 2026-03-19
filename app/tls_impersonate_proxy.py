@@ -102,8 +102,8 @@ def _init_ca():
             .issuer_name(issuer)
             .public_key(_CA_KEY.public_key())
             .serial_number(x509.random_serial_number())
-            .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
-            .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365))
+            .not_valid_before(datetime.datetime.now(datetime.UTC))
+            .not_valid_after(datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=365))
             .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
             .sign(_CA_KEY, hashes.SHA256())
         )
@@ -141,8 +141,8 @@ def _get_cert_for_host(hostname):
         .issuer_name(_CA_CERT.subject)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
-        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30))
+        .not_valid_before(datetime.datetime.now(datetime.UTC))
+        .not_valid_after(datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30))
         .add_extension(
             x509.SubjectAlternativeName([san]),
             critical=False,
