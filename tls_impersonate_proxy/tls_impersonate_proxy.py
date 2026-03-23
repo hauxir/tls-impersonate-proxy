@@ -134,7 +134,8 @@ def _get_cert_for_host(hostname):
         san = x509.DNSName(hostname)
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostname)])
+    cn = hostname[:64] if len(hostname) > 64 else hostname
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
