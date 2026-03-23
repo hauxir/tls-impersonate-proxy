@@ -193,13 +193,13 @@ def _get_session():
     return _SESSION_LOCAL.session
 
 
-def _do_request(method, url, headers, body):
+def _do_request(method, url, headers, body, allow_redirects=False):
     """Issue a request via curl_cffi with TLS impersonation."""
     try:
         return _get_session().request(
             method=method, url=url, headers=headers,
             data=body, timeout=30,
-            allow_redirects=False, stream=True,
+            allow_redirects=allow_redirects, stream=True,
         )
     except Exception as e:
         print(f"tls-impersonate-proxy error: {e}", flush=True)
@@ -312,7 +312,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         "proxy-authorization", "proxy-authenticate"}
                 fwd_headers = {k: v for k, v in headers.items() if k.lower() not in skip}
 
-                r = _do_request(method, url, fwd_headers, body)
+                r = _do_request(method, url, fwd_headers, body, allow_redirects=True)
                 if r is None:
                     wfile.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
                     wfile.flush()
