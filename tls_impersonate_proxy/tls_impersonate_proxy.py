@@ -241,7 +241,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_CONNECT(self):
         host, _, port_str = self.path.rpartition(":")
         host = host.strip("[]")
-        port = int(port_str) if port_str else 443
+        try:
+            port = int(port_str) if port_str else 443
+        except ValueError:
+            print(f"CONNECT bad host:port: {self.path[:120]}", flush=True)
+            self.send_error(400, "Bad host:port")
+            return
 
         self.send_response(200, "Connection established")
         self.end_headers()
