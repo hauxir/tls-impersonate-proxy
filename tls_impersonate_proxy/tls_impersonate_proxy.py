@@ -318,37 +318,36 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     wfile.flush()
                     break
 
-                # Write response
-                reason = http.client.responses.get(r.status_code, "Unknown")
-                status_line = f"HTTP/1.1 {r.status_code} {reason}\r\n".encode()
-                wfile.write(status_line)
-                skip_h = {"transfer-encoding", "content-encoding", "content-length"}
-                for k, v in r.headers.items():
-                    if k.lower() not in skip_h:
-                        wfile.write(f"{k}: {v}\r\n".encode())
+                try:
+                    # Write response
+                    reason = http.client.responses.get(r.status_code, "Unknown")
+                    status_line = f"HTTP/1.1 {r.status_code} {reason}\r\n".encode()
+                    wfile.write(status_line)
+                    skip_h = {"transfer-encoding", "content-encoding",
+                              "content-length", "connection", "keep-alive"}
+                    for k, v in r.headers.items():
+                        if k.lower() not in skip_h:
+                            wfile.write(f"{k}: {v}\r\n".encode())
 
-                wfile.write(b"Connection: keep-alive\r\n")
-                upstream_cl = r.headers.get("content-length")
-                if upstream_cl:
-                    # Known size — buffer and send with Content-Length
-                    # (decompressed size may differ, so recompute)
-                    body_data = b"".join(r.iter_content())
-                    wfile.write(f"Content-Length: {len(body_data)}\r\n".encode())
-                    wfile.write(b"\r\n")
-                    wfile.write(body_data)
-                else:
-                    # Unknown/streaming — use chunked
-                    wfile.write(b"Transfer-Encoding: chunked\r\n")
-                    wfile.write(b"\r\n")
-                    for chunk in r.iter_content():
-                        if chunk:
-                            wfile.write(f"{len(chunk):x}\r\n".encode())
-                            wfile.write(chunk)
-                            wfile.write(b"\r\n")
-                            wfile.flush()
-                    wfile.write(b"0\r\n\r\n")
-                wfile.flush()
-                print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
+                    wfile.write(b"Connection: close\r\n")
+                    upstream_cl = r.headers.get("content-length")
+                    if upstream_cl:
+                        body_data = b"".join(r.iter_content())
+                        wfile.write(f"Content-Length: {len(body_data)}\r\n".encode())
+                        wfile.write(b"\r\n")
+                        wfile.write(body_data)
+                    else:
+                        # No content-length — stream directly.
+                        # Connection: close lets the client detect end-of-body via EOF.
+                        wfile.write(b"\r\n")
+                        for chunk in r.iter_content():
+                            if chunk:
+                                wfile.write(chunk)
+                                wfile.flush()
+                    wfile.flush()
+                    print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
+                finally:
+                    r.close()
 
         except Exception as e:
             print(f"MITM handler error: {e}", flush=True)
