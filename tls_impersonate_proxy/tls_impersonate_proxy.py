@@ -348,6 +348,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
                 finally:
                     r.close()
+                # Connection: close was sent — break so the TLS socket
+                # closes and the client sees EOF (end-of-body).
+                break
 
         except Exception as e:
             print(f"MITM handler error: {e}", flush=True)
