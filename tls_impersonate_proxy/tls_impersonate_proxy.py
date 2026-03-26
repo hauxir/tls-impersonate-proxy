@@ -320,35 +320,43 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     break
 
                 try:
-                    # Write response
-                    reason = http.client.responses.get(r.status_code, "Unknown")
-                    status_line = f"HTTP/1.1 {r.status_code} {reason}\r\n".encode()
-                    wfile.write(status_line)
+                    # Spool the entire response body before writing
+                    # anything to the client.  If iter_content() fails
+                    # mid-stream (e.g. HTTP/2 INTERNAL_ERROR), we can
+                    # still send a clean 502 instead of partial headers.
                     skip_h = {"transfer-encoding", "content-encoding",
                               "content-length", "connection", "keep-alive"}
-                    for k, v in r.headers.items():
-                        if k.lower() not in skip_h:
-                            wfile.write(f"{k}: {v}\r\n".encode())
+                    resp_headers = [(k, v) for k, v in r.headers.items()
+                                   if k.lower() not in skip_h]
+                    status_code = r.status_code
+                    try:
+                        with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
+                            for chunk in r.iter_content(CHUNK_SIZE):
+                                if chunk:
+                                    tmp.write(chunk)
+                            size = tmp.tell()
+                            tmp.seek(0)
 
-                    wfile.write(b"Connection: close\r\n")
-                    # Always spool and send Content-Length so ffmpeg
-                    # doesn't treat Connection: close as a premature EOF.
-                    with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
-                        for chunk in r.iter_content(CHUNK_SIZE):
-                            if chunk:
-                                tmp.write(chunk)
-                        size = tmp.tell()
-                        tmp.seek(0)
-                        wfile.write(f"Content-Length: {size}\r\n".encode())
-                        wfile.write(b"\r\n")
-                        while True:
-                            buf = tmp.read(CHUNK_SIZE)
-                            if not buf:
-                                break
-                            wfile.write(buf)
+                            reason = http.client.responses.get(status_code, "Unknown")
+                            wfile.write(f"HTTP/1.1 {status_code} {reason}\r\n".encode())
+                            for k, v in resp_headers:
+                                wfile.write(f"{k}: {v}\r\n".encode())
+                            wfile.write(b"Connection: close\r\n")
+                            wfile.write(f"Content-Length: {size}\r\n".encode())
+                            wfile.write(b"\r\n")
+                            while True:
+                                buf = tmp.read(CHUNK_SIZE)
+                                if not buf:
+                                    break
+                                wfile.write(buf)
+                    except Exception as spool_err:
+                        print(f"CONNECT-MITM spool error: {spool_err}", flush=True)
+                        wfile.write(b"HTTP/1.1 502 Bad Gateway\r\n"
+                                    b"Connection: close\r\n"
+                                    b"Content-Length: 0\r\n\r\n")
                     wfile.flush()
-                    if r.status_code >= 400:
-                        print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
+                    if status_code >= 400:
+                        print(f"CONNECT-MITM {method} {url} -> {status_code}", flush=True)
                 finally:
                     r.close()
                 # Connection: close was sent — break so the TLS socket
@@ -397,32 +405,38 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            self.send_response(resp.status_code)
             is_head = self.command == "HEAD"
             skip_resp = {"transfer-encoding", "content-encoding", "content-length"}
-            for key, val in resp.headers.items():
-                if key.lower() not in skip_resp:
-                    self.send_header(key, val or "")
+            resp_headers = [(k, v or "") for k, v in resp.headers.items()
+                           if k.lower() not in skip_resp]
             if is_head:
-                # Forward Content-Length for HEAD so clients can probe size
+                self.send_response(resp.status_code)
+                for key, val in resp_headers:
+                    self.send_header(key, val)
                 cl = resp.headers.get("content-length")
                 if cl:
                     self.send_header("Content-Length", cl)
                 self.end_headers()
             else:
-                with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
-                    for chunk in resp.iter_content(CHUNK_SIZE):
-                        if chunk:
-                            tmp.write(chunk)
-                    size = tmp.tell()
-                    tmp.seek(0)
-                    self.send_header("Content-Length", str(size))
-                    self.end_headers()
-                    while True:
-                        buf = tmp.read(CHUNK_SIZE)
-                        if not buf:
-                            break
-                        self.wfile.write(buf)
+                try:
+                    with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
+                        for chunk in resp.iter_content(CHUNK_SIZE):
+                            if chunk:
+                                tmp.write(chunk)
+                        size = tmp.tell()
+                        tmp.seek(0)
+                        self.send_response(resp.status_code)
+                        for key, val in resp_headers:
+                            self.send_header(key, val)
+                        self.send_header("Content-Length", str(size))
+                        self.end_headers()
+                        while True:
+                            buf = tmp.read(CHUNK_SIZE)
+                            if not buf:
+                                break
+                            self.wfile.write(buf)
+                except Exception:
+                    self.send_error(502, "Upstream read failed")
             self.wfile.flush()
         finally:
             resp.close()
