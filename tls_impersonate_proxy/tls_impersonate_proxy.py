@@ -332,7 +332,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     wfile.write(b"Connection: close\r\n")
                     upstream_cl = r.headers.get("content-length")
                     if upstream_cl:
-                        body_data = b"".join(r.iter_content())
+                        body_data = b"".join(r.iter_content(CHUNK_SIZE))
                         wfile.write(f"Content-Length: {len(body_data)}\r\n".encode())
                         wfile.write(b"\r\n")
                         wfile.write(body_data)
@@ -340,10 +340,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         # No content-length — stream directly.
                         # Connection: close lets the client detect end-of-body via EOF.
                         wfile.write(b"\r\n")
-                        for chunk in r.iter_content():
+                        for chunk in r.iter_content(CHUNK_SIZE):
                             if chunk:
                                 wfile.write(chunk)
-                                wfile.flush()
                     wfile.flush()
                     if r.status_code >= 400:
                         print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
@@ -410,19 +409,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             else:
                 upstream_cl = resp.headers.get("content-length")
                 if upstream_cl:
-                    body_data = b"".join(resp.iter_content())
+                    body_data = b"".join(resp.iter_content(CHUNK_SIZE))
                     self.send_header("Content-Length", str(len(body_data)))
                     self.end_headers()
                     self.wfile.write(body_data)
                 else:
                     self.send_header("Transfer-Encoding", "chunked")
                     self.end_headers()
-                    for chunk in resp.iter_content():
+                    for chunk in resp.iter_content(CHUNK_SIZE):
                         if chunk:
                             self.wfile.write(f"{len(chunk):x}\r\n".encode())
                             self.wfile.write(chunk)
                             self.wfile.write(b"\r\n")
-                            self.wfile.flush()
                     self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
         finally:
