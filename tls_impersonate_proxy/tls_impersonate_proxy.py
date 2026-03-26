@@ -345,7 +345,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 wfile.write(chunk)
                                 wfile.flush()
                     wfile.flush()
-                    print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
+                    if r.status_code >= 400:
+                        print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
                 finally:
                     r.close()
                 # Connection: close was sent — break so the TLS socket
