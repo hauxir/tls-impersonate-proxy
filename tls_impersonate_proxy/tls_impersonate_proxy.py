@@ -331,28 +331,21 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             wfile.write(f"{k}: {v}\r\n".encode())
 
                     wfile.write(b"Connection: close\r\n")
-                    upstream_cl = r.headers.get("content-length")
-                    if upstream_cl:
-                        with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
-                            for chunk in r.iter_content(CHUNK_SIZE):
-                                if chunk:
-                                    tmp.write(chunk)
-                            size = tmp.tell()
-                            tmp.seek(0)
-                            wfile.write(f"Content-Length: {size}\r\n".encode())
-                            wfile.write(b"\r\n")
-                            while True:
-                                buf = tmp.read(CHUNK_SIZE)
-                                if not buf:
-                                    break
-                                wfile.write(buf)
-                    else:
-                        # No content-length — stream directly.
-                        # Connection: close lets the client detect end-of-body via EOF.
-                        wfile.write(b"\r\n")
+                    # Always spool and send Content-Length so ffmpeg
+                    # doesn't treat Connection: close as a premature EOF.
+                    with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
                         for chunk in r.iter_content(CHUNK_SIZE):
                             if chunk:
-                                wfile.write(chunk)
+                                tmp.write(chunk)
+                        size = tmp.tell()
+                        tmp.seek(0)
+                        wfile.write(f"Content-Length: {size}\r\n".encode())
+                        wfile.write(b"\r\n")
+                        while True:
+                            buf = tmp.read(CHUNK_SIZE)
+                            if not buf:
+                                break
+                            wfile.write(buf)
                     wfile.flush()
                     if r.status_code >= 400:
                         print(f"CONNECT-MITM {method} {url} -> {r.status_code}", flush=True)
@@ -417,30 +410,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", cl)
                 self.end_headers()
             else:
-                upstream_cl = resp.headers.get("content-length")
-                if upstream_cl:
-                    with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
-                        for chunk in resp.iter_content(CHUNK_SIZE):
-                            if chunk:
-                                tmp.write(chunk)
-                        size = tmp.tell()
-                        tmp.seek(0)
-                        self.send_header("Content-Length", str(size))
-                        self.end_headers()
-                        while True:
-                            buf = tmp.read(CHUNK_SIZE)
-                            if not buf:
-                                break
-                            self.wfile.write(buf)
-                else:
-                    self.send_header("Transfer-Encoding", "chunked")
-                    self.end_headers()
+                with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
                     for chunk in resp.iter_content(CHUNK_SIZE):
                         if chunk:
-                            self.wfile.write(f"{len(chunk):x}\r\n".encode())
-                            self.wfile.write(chunk)
-                            self.wfile.write(b"\r\n")
-                    self.wfile.write(b"0\r\n\r\n")
+                            tmp.write(chunk)
+                    size = tmp.tell()
+                    tmp.seek(0)
+                    self.send_header("Content-Length", str(size))
+                    self.end_headers()
+                    while True:
+                        buf = tmp.read(CHUNK_SIZE)
+                        if not buf:
+                            break
+                        self.wfile.write(buf)
             self.wfile.flush()
         finally:
             resp.close()
