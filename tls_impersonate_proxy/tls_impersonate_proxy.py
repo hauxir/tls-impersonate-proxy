@@ -45,6 +45,7 @@ from socketserver import ThreadingMixIn
 from curl_cffi import requests as cffi_requests
 
 CHUNK_SIZE = 65536
+SPOOL_MAX = 2 * 1024 * 1024  # 2 MB in-memory before spilling to disk
 
 _CA_KEY = None
 _CA_CERT = None
@@ -332,7 +333,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     wfile.write(b"Connection: close\r\n")
                     upstream_cl = r.headers.get("content-length")
                     if upstream_cl:
-                        with tempfile.SpooledTemporaryFile(max_size=CHUNK_SIZE) as tmp:
+                        with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
                             for chunk in r.iter_content(CHUNK_SIZE):
                                 if chunk:
                                     tmp.write(chunk)
@@ -418,7 +419,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             else:
                 upstream_cl = resp.headers.get("content-length")
                 if upstream_cl:
-                    with tempfile.SpooledTemporaryFile(max_size=CHUNK_SIZE) as tmp:
+                    with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
                         for chunk in resp.iter_content(CHUNK_SIZE):
                             if chunk:
                                 tmp.write(chunk)
