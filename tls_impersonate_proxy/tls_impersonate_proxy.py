@@ -332,10 +332,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     wfile.write(b"Connection: close\r\n")
                     upstream_cl = r.headers.get("content-length")
                     if upstream_cl:
-                        body_data = b"".join(r.iter_content(CHUNK_SIZE))
-                        wfile.write(f"Content-Length: {len(body_data)}\r\n".encode())
-                        wfile.write(b"\r\n")
-                        wfile.write(body_data)
+                        with tempfile.SpooledTemporaryFile(max_size=CHUNK_SIZE) as tmp:
+                            for chunk in r.iter_content(CHUNK_SIZE):
+                                if chunk:
+                                    tmp.write(chunk)
+                            size = tmp.tell()
+                            tmp.seek(0)
+                            wfile.write(f"Content-Length: {size}\r\n".encode())
+                            wfile.write(b"\r\n")
+                            while True:
+                                buf = tmp.read(CHUNK_SIZE)
+                                if not buf:
+                                    break
+                                wfile.write(buf)
                     else:
                         # No content-length — stream directly.
                         # Connection: close lets the client detect end-of-body via EOF.
@@ -409,10 +418,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
             else:
                 upstream_cl = resp.headers.get("content-length")
                 if upstream_cl:
-                    body_data = b"".join(resp.iter_content(CHUNK_SIZE))
-                    self.send_header("Content-Length", str(len(body_data)))
-                    self.end_headers()
-                    self.wfile.write(body_data)
+                    with tempfile.SpooledTemporaryFile(max_size=CHUNK_SIZE) as tmp:
+                        for chunk in resp.iter_content(CHUNK_SIZE):
+                            if chunk:
+                                tmp.write(chunk)
+                        size = tmp.tell()
+                        tmp.seek(0)
+                        self.send_header("Content-Length", str(size))
+                        self.end_headers()
+                        while True:
+                            buf = tmp.read(CHUNK_SIZE)
+                            if not buf:
+                                break
+                            self.wfile.write(buf)
                 else:
                     self.send_header("Transfer-Encoding", "chunked")
                     self.end_headers()
