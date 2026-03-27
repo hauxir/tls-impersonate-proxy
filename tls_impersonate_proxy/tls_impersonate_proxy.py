@@ -45,7 +45,6 @@ from socketserver import ThreadingMixIn
 from curl_cffi import requests as cffi_requests
 
 CHUNK_SIZE = 65536
-SPOOL_MAX = 2 * 1024 * 1024  # 2 MB in-memory before spilling to disk
 
 _CA_KEY = None
 _CA_CERT = None
@@ -199,7 +198,7 @@ def _do_request(method, url, headers, body, allow_redirects=False):
     try:
         return _get_session().request(
             method=method, url=url, headers=headers,
-            data=body, timeout=30,
+            data=body, timeout=(10, 300),
             allow_redirects=allow_redirects, stream=True,
         )
     except Exception as e:
@@ -320,40 +319,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     break
 
                 try:
-                    # Spool the entire response body before writing
-                    # anything to the client.  If iter_content() fails
-                    # mid-stream (e.g. HTTP/2 INTERNAL_ERROR), we can
-                    # still send a clean 502 instead of partial headers.
                     skip_h = {"transfer-encoding", "content-encoding",
-                              "content-length", "connection", "keep-alive"}
+                              "connection", "keep-alive"}
                     resp_headers = [(k, v) for k, v in r.headers.items()
                                    if k.lower() not in skip_h]
                     status_code = r.status_code
-                    try:
-                        with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
-                            for chunk in r.iter_content(CHUNK_SIZE):
-                                if chunk:
-                                    tmp.write(chunk)
-                            size = tmp.tell()
-                            tmp.seek(0)
-
-                            reason = http.client.responses.get(status_code, "Unknown")
-                            wfile.write(f"HTTP/1.1 {status_code} {reason}\r\n".encode())
-                            for k, v in resp_headers:
-                                wfile.write(f"{k}: {v}\r\n".encode())
-                            wfile.write(b"Connection: close\r\n")
-                            wfile.write(f"Content-Length: {size}\r\n".encode())
-                            wfile.write(b"\r\n")
-                            while True:
-                                buf = tmp.read(CHUNK_SIZE)
-                                if not buf:
-                                    break
-                                wfile.write(buf)
-                    except Exception as spool_err:
-                        print(f"CONNECT-MITM spool error: {spool_err}", flush=True)
-                        wfile.write(b"HTTP/1.1 502 Bad Gateway\r\n"
-                                    b"Connection: close\r\n"
-                                    b"Content-Length: 0\r\n\r\n")
+                    reason = http.client.responses.get(status_code, "Unknown")
+                    wfile.write(f"HTTP/1.1 {status_code} {reason}\r\n".encode())
+                    for k, v in resp_headers:
+                        wfile.write(f"{k}: {v}\r\n".encode())
+                    wfile.write(b"Connection: close\r\n\r\n")
+                    for chunk in r.iter_content(CHUNK_SIZE):
+                        if chunk:
+                            wfile.write(chunk)
                     wfile.flush()
                     if status_code >= 400:
                         print(f"CONNECT-MITM {method} {url} -> {status_code}", flush=True)
@@ -418,25 +396,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", cl)
                 self.end_headers()
             else:
-                try:
-                    with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX) as tmp:
-                        for chunk in resp.iter_content(CHUNK_SIZE):
-                            if chunk:
-                                tmp.write(chunk)
-                        size = tmp.tell()
-                        tmp.seek(0)
-                        self.send_response(resp.status_code)
-                        for key, val in resp_headers:
-                            self.send_header(key, val)
-                        self.send_header("Content-Length", str(size))
-                        self.end_headers()
-                        while True:
-                            buf = tmp.read(CHUNK_SIZE)
-                            if not buf:
-                                break
-                            self.wfile.write(buf)
-                except Exception:
-                    self.send_error(502, "Upstream read failed")
+                self.send_response(resp.status_code)
+                for key, val in resp_headers:
+                    self.send_header(key, val)
+                cl = resp.headers.get("content-length")
+                if cl:
+                    self.send_header("Content-Length", cl)
+                self.end_headers()
+                for chunk in resp.iter_content(CHUNK_SIZE):
+                    if chunk:
+                        self.wfile.write(chunk)
             self.wfile.flush()
         finally:
             resp.close()
