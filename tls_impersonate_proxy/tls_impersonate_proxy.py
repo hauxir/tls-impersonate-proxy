@@ -320,7 +320,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
                 try:
                     skip_h = {"transfer-encoding", "content-encoding",
-                              "connection", "keep-alive"}
+                              "content-length", "connection", "keep-alive"}
                     resp_headers = [(k, v) for k, v in r.headers.items()
                                    if k.lower() not in skip_h]
                     status_code = r.status_code
@@ -328,10 +328,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     wfile.write(f"HTTP/1.1 {status_code} {reason}\r\n".encode())
                     for k, v in resp_headers:
                         wfile.write(f"{k}: {v}\r\n".encode())
+                    wfile.write(b"Transfer-Encoding: chunked\r\n")
                     wfile.write(b"Connection: close\r\n\r\n")
                     for chunk in r.iter_content(CHUNK_SIZE):
                         if chunk:
+                            wfile.write(f"{len(chunk):x}\r\n".encode())
                             wfile.write(chunk)
+                            wfile.write(b"\r\n")
+                    wfile.write(b"0\r\n\r\n")
                     wfile.flush()
                     if status_code >= 400:
                         print(f"CONNECT-MITM {method} {url} -> {status_code}", flush=True)
@@ -391,21 +395,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.send_response(resp.status_code)
                 for key, val in resp_headers:
                     self.send_header(key, val)
-                cl = resp.headers.get("content-length")
-                if cl:
-                    self.send_header("Content-Length", cl)
                 self.end_headers()
             else:
+                body_chunks = []
+                for chunk in resp.iter_content(CHUNK_SIZE):
+                    if chunk:
+                        body_chunks.append(chunk)
+                body_data = b"".join(body_chunks)
                 self.send_response(resp.status_code)
                 for key, val in resp_headers:
                     self.send_header(key, val)
-                cl = resp.headers.get("content-length")
-                if cl:
-                    self.send_header("Content-Length", cl)
+                self.send_header("Content-Length", str(len(body_data)))
                 self.end_headers()
-                for chunk in resp.iter_content(CHUNK_SIZE):
-                    if chunk:
-                        self.wfile.write(chunk)
+                self.wfile.write(body_data)
             self.wfile.flush()
         finally:
             resp.close()
