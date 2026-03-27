@@ -395,6 +395,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.send_response(resp.status_code)
                 for key, val in resp_headers:
                     self.send_header(key, val)
+                cl = resp.headers.get("content-length")
+                if cl:
+                    self.send_header("Content-Length", cl)
                 self.end_headers()
             else:
                 body_chunks = []
